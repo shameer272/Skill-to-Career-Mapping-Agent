@@ -32,7 +32,7 @@ def env(name: str) -> str:
 
 def search_jobs_impl(skill: str, location: str):
     rapid_api_key = env("RAPID_API_KEY")
-    url = "https://jsearch.p.rapidapi.com/search"
+    url = "https://jsearch.p.rapidapi.com/search-v2"
     headers = {
         "x-rapidapi-key": rapid_api_key,
         "x-rapidapi-host": "jsearch.p.rapidapi.com",
