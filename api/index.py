@@ -63,7 +63,7 @@ def env(name: str) -> str:
 
 
 # ---------------------------------------------------------
-# Job search
+# JSearch job search
 # ---------------------------------------------------------
 
 def search_jobs_impl(skill: str, location: str):
@@ -97,6 +97,7 @@ def search_jobs_impl(skill: str, location: str):
         }
 
         try:
+
             response = requests.get(
                 url,
                 headers=headers,
@@ -108,12 +109,64 @@ def search_jobs_impl(skill: str, location: str):
 
             data = response.json()
 
-        except requests.RequestException:
-            # If JSearch is unavailable or times out,
-            # continue with the career analysis.
+        except requests.RequestException as exc:
+
+            print(
+                f"JSEARCH REQUEST ERROR: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
             continue
 
-        for job in data.get("data", []) or []:
+        except ValueError as exc:
+
+            print(
+                f"JSEARCH JSON ERROR: {exc}"
+            )
+
+            continue
+
+
+        # -------------------------------------------------
+        # Make sure the API response is a dictionary
+        # -------------------------------------------------
+
+        if not isinstance(data, dict):
+
+            print(
+                "JSEARCH RESPONSE WAS NOT A DICTIONARY: "
+                f"{type(data).__name__}"
+            )
+
+            continue
+
+
+        jobs = data.get("data", [])
+
+
+        # -------------------------------------------------
+        # Make sure jobs is a list
+        # -------------------------------------------------
+
+        if not isinstance(jobs, list):
+
+            print(
+                "JSEARCH DATA WAS NOT A LIST: "
+                f"{type(jobs).__name__}"
+            )
+
+            continue
+
+
+        # -------------------------------------------------
+        # Process individual jobs
+        # -------------------------------------------------
+
+        for job in jobs:
+
+            # Ignore malformed/string entries
+            if not isinstance(job, dict):
+                continue
 
             job_id = (
                 job.get("job_id")
@@ -121,10 +174,33 @@ def search_jobs_impl(skill: str, location: str):
                 or job.get("job_title")
             )
 
+            if not job_id:
+                continue
+
             if job_id in seen:
                 continue
 
             seen.add(job_id)
+
+
+            job_location_parts = [
+                job.get("job_city"),
+                job.get("job_state"),
+                job.get("job_country"),
+            ]
+
+            job_location_parts = [
+                str(x)
+                for x in job_location_parts
+                if x
+            ]
+
+            job_location = (
+                ", ".join(job_location_parts)
+                if job_location_parts
+                else location
+            )
+
 
             collected.append(
                 {
@@ -138,15 +214,7 @@ def search_jobs_impl(skill: str, location: str):
                         or "Company not listed"
                     ),
 
-                    "location": ", ".join(
-                        x
-                        for x in [
-                            job.get("job_city"),
-                            job.get("job_state"),
-                            job.get("job_country"),
-                        ]
-                        if x
-                    ) or location,
+                    "location": job_location,
 
                     "type": (
                         job.get("job_employment_type")
@@ -175,14 +243,16 @@ def search_jobs_impl(skill: str, location: str):
                 }
             )
 
+
         if len(collected) >= 8:
             break
+
 
     return collected[:8]
 
 
 # ---------------------------------------------------------
-# Job search tool
+# LangChain job-search tool
 # ---------------------------------------------------------
 
 @tool
@@ -208,11 +278,15 @@ def build_agent():
 
     tavily_key = env("TAVILY_API_KEY")
 
+
+    # Gemini
     model = init_chat_model(
         model="google_genai:gemini-2.5-flash",
         api_key=gemini_key,
     )
 
+
+    # Tavily
     skill_demand_tool = TavilySearch(
         max_results=5,
         topic="general",
@@ -220,6 +294,8 @@ def build_agent():
         tavily_api_key=tavily_key,
     )
 
+
+    # Agent instructions
     system_prompt = """
 You are a Skill-to-Career Mapping assistant for students
 and early-career professionals.
@@ -239,11 +315,12 @@ You have two tools:
 
 For every user request:
 
-- Use the research tool to understand the career.
-- Use the job search tool when relevant.
-- If the query is broad, identify relevant skill terms
-  before searching jobs.
-- Prefer concrete and useful information.
+- Research the career and current industry demand.
+- Identify important technical skills.
+- Identify important soft skills.
+- Provide a practical learning roadmap.
+- Search for relevant job opportunities.
+- Use the user's requested location for job searches.
 
 Return a concise, structured answer.
 
@@ -251,25 +328,35 @@ Use plain text headings and bullet points.
 
 Include:
 
-- Career overview
-- Current industry demand
-- Important technical skills
-- Important soft skills
-- Suggested learning roadmap
-- Relevant job opportunities
+Career Overview
+
+Industry Demand
+
+Technical Skills
+
+Soft Skills
+
+Learning Roadmap
+
+Job Opportunities
+
+For every available job include:
+
 - Job title
 - Company
 - Location
 - Employment type
-- Application link when available
+- Application link
 
 Do not invent jobs, salaries, sources, or links.
 
 If no jobs are found, clearly say so.
 
 If the job-search service is temporarily unavailable,
-still provide the career research and skill roadmap.
+still provide the career research, industry demand,
+skills and learning roadmap.
 """
+
 
     return create_agent(
         model=model,
@@ -305,13 +392,16 @@ def analyze(payload: AnalyzeRequest):
 
         agent = build_agent()
 
+
         prompt = (
             f"User query: {payload.query}\n"
             f"Target location for job openings: "
             f"{payload.location}\n\n"
-            "Research the skill/career demand and return "
-            "relevant current job opportunities."
+            "Research the career demand, identify the "
+            "important skills and provide relevant "
+            "current job opportunities."
         )
+
 
         result = agent.invoke(
             {
@@ -324,46 +414,148 @@ def analyze(payload: AnalyzeRequest):
             }
         )
 
+
+        # -------------------------------------------------
+        # Safely extract messages
+        # -------------------------------------------------
+
+        if not isinstance(result, dict):
+
+            raise RuntimeError(
+                "Agent returned an unexpected response."
+            )
+
+
         messages = result.get(
             "messages",
             []
         )
 
-        final = (
-            messages[-1].content
-            if messages
-            else "No response generated."
-        )
 
-        if isinstance(final, list):
+        if not isinstance(messages, list):
 
-            final = "\n".join(
-                item.get("text", "")
-                for item in final
-                if (
-                    isinstance(item, dict)
-                    and item.get("text")
-                )
+            raise RuntimeError(
+                "Agent messages had an unexpected format."
             )
 
+
+        if not messages:
+
+            final = "No response generated."
+
+        else:
+
+            last_message = messages[-1]
+
+
+            # ---------------------------------------------
+            # Extract content safely
+            # ---------------------------------------------
+
+            if hasattr(last_message, "content"):
+
+                final = last_message.content
+
+            elif isinstance(last_message, dict):
+
+                final = last_message.get(
+                    "content",
+                    ""
+                )
+
+            else:
+
+                final = str(last_message)
+
+
+        # -------------------------------------------------
+        # Handle different content formats
+        # -------------------------------------------------
+
+        if isinstance(final, str):
+
+            final_text = final
+
+
+        elif isinstance(final, list):
+
+            parts = []
+
+            for item in final:
+
+                if isinstance(item, str):
+
+                    parts.append(item)
+
+                elif isinstance(item, dict):
+
+                    text = item.get(
+                        "text",
+                        ""
+                    )
+
+                    if text:
+                        parts.append(str(text))
+
+                else:
+
+                    parts.append(str(item))
+
+
+            final_text = "\n".join(parts)
+
+
+        elif isinstance(final, dict):
+
+            if final.get("text"):
+
+                final_text = str(
+                    final.get("text")
+                )
+
+            elif final.get("content"):
+
+                final_text = str(
+                    final.get("content")
+                )
+
+            else:
+
+                final_text = str(final)
+
+
+        else:
+
+            final_text = str(final)
+
+
+        if not final_text.strip():
+
+            final_text = "No response generated."
+
+
         return {
-            "answer": str(final),
+            "answer": final_text,
             "query": payload.query,
             "location": payload.location
         }
 
-    except HTTPException as exc:
 
-        raise exc
+    except HTTPException:
+
+        raise
+
 
     except Exception as exc:
 
         print(
-            f"ANALYSIS ERROR: "
+            "ANALYSIS ERROR: "
             f"{type(exc).__name__}: {exc}"
         )
 
         raise HTTPException(
             status_code=500,
-            detail=f"{type(exc).__name__}: {exc}"
+            detail=(
+                f"{type(exc).__name__}: {exc}"
+            )
         ) from exc
