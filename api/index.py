@@ -368,14 +368,10 @@ def analyze(payload: AnalyzeRequest):
     except HTTPException:
         raise
 
-    except Exception as exc:
+        except Exception as exc:
+        print(f"ANALYSIS ERROR: {type(exc).__name__}: {exc}")
 
-        # Avoid exposing API keys or provider internals
-        # to the browser.
         raise HTTPException(
             status_code=500,
-            detail=(
-                "The agent could not complete the analysis. "
-                "Please try again."
-            )
+            detail=f"{type(exc).__name__}: {exc}"
         ) from exc
