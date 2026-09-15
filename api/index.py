@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 
 from fastapi import FastAPI, HTTPException
@@ -64,7 +63,7 @@ def env(name: str) -> str:
 
 
 # ---------------------------------------------------------
-# Job search using JSearch / RapidAPI
+# Job search
 # ---------------------------------------------------------
 
 def search_jobs_impl(skill: str, location: str):
@@ -78,8 +77,6 @@ def search_jobs_impl(skill: str, location: str):
         "x-rapidapi-host": "jsearch.p.rapidapi.com",
     }
 
-    # Start with the user's skill and fall back
-    # to related job titles.
     queries = [
         f"{skill} in {location}",
         f"{skill} AI engineer in {location}",
@@ -100,7 +97,6 @@ def search_jobs_impl(skill: str, location: str):
         }
 
         try:
-
             response = requests.get(
                 url,
                 headers=headers,
@@ -113,9 +109,8 @@ def search_jobs_impl(skill: str, location: str):
             data = response.json()
 
         except requests.RequestException:
-            # JSearch can occasionally be slow or unavailable.
-            # Do not stop the complete AI analysis because
-            # the job-search API failed.
+            # If JSearch is unavailable or times out,
+            # continue with the career analysis.
             continue
 
         for job in data.get("data", []) or []:
@@ -180,7 +175,6 @@ def search_jobs_impl(skill: str, location: str):
                 }
             )
 
-        # Stop once we have enough jobs.
         if len(collected) >= 8:
             break
 
@@ -188,7 +182,7 @@ def search_jobs_impl(skill: str, location: str):
 
 
 # ---------------------------------------------------------
-# LangChain job-search tool
+# Job search tool
 # ---------------------------------------------------------
 
 @tool
@@ -214,13 +208,11 @@ def build_agent():
 
     tavily_key = env("TAVILY_API_KEY")
 
-    # Gemini model
     model = init_chat_model(
         model="google_genai:gemini-2.5-flash",
         api_key=gemini_key,
     )
 
-    # Tavily research tool
     skill_demand_tool = TavilySearch(
         max_results=5,
         topic="general",
@@ -228,7 +220,6 @@ def build_agent():
         tavily_api_key=tavily_key,
     )
 
-    # Agent instructions
     system_prompt = """
 You are a Skill-to-Career Mapping assistant for students
 and early-career professionals.
@@ -250,9 +241,9 @@ For every user request:
 
 - Use the research tool to understand the career.
 - Use the job search tool when relevant.
-- If the query is broad, identify the most relevant
-  skill terms before searching jobs.
-- Prefer concrete and useful information over generic advice.
+- If the query is broad, identify relevant skill terms
+  before searching jobs.
+- Prefer concrete and useful information.
 
 Return a concise, structured answer.
 
@@ -274,13 +265,11 @@ Include:
 
 Do not invent jobs, salaries, sources, or links.
 
-If no jobs are found, clearly say so and suggest
-narrower search terms.
+If no jobs are found, clearly say so.
 
 If the job-search service is temporarily unavailable,
 still provide the career research and skill roadmap.
 """
-
 
     return create_agent(
         model=model,
@@ -346,8 +335,6 @@ def analyze(payload: AnalyzeRequest):
             else "No response generated."
         )
 
-        # Gemini/LangChain may sometimes return
-        # structured content instead of a simple string.
         if isinstance(final, list):
 
             final = "\n".join(
@@ -365,11 +352,16 @@ def analyze(payload: AnalyzeRequest):
             "location": payload.location
         }
 
-    except HTTPException:
-        raise
+    except HTTPException as exc:
 
-        except Exception as exc:
-        print(f"ANALYSIS ERROR: {type(exc).__name__}: {exc}")
+        raise exc
+
+    except Exception as exc:
+
+        print(
+            f"ANALYSIS ERROR: "
+            f"{type(exc).__name__}: {exc}"
+        )
 
         raise HTTPException(
             status_code=500,
