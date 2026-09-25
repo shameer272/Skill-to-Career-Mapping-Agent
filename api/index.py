@@ -281,7 +281,7 @@ def build_agent():
 
     # Gemini
     model = init_chat_model(
-        model="google_genai:gemini-2.5-flash",
+        model="google_genai:gemini-3.5-flash",
         api_key=gemini_key,
     )
 
